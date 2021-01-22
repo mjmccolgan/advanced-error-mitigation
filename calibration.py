@@ -22,13 +22,18 @@ from qiskit.ignis.mitigation.measurement import complete_meas_cal
 
 
 # generate_calibration_circuits uses PCA to identify good calibration circuits
-# from the training set, along with binary calibration circuits.
+# from a training set of random low depth circuits along with binary calibration
+# circuits. It takes a noisy quantum computer, its ideal simulator, the maximum
+# depth for training circuits, the number of calibration circuits to select per
+# principle component and the number of dimensions to plot in (the default
+# selection 0 does not produce a plot). The function returns the selected
+# calibration circuits.
 def generate_calibration_circuits(noisy, simulator, max_depth, pc_cirq, plot=0):
     global shots
     num_qubits = len(noisy.properties().qubits)
     training, _ = complete_meas_cal(range(num_qubits))
     for i in range(1, max_depth):
-        for _ in range(10 * num_qubits):
+        for _ in range(100 * num_qubits):
             training.append(random_gated_circuit(noisy, i, 0))
     
     experiments = transpile(training, backend=noisy)
@@ -46,26 +51,42 @@ def generate_calibration_circuits(noisy, simulator, max_depth, pc_cirq, plot=0):
     pca = PCA(n_components=math.ceil(2 ** num_qubits))
     pca.fit(errors)
 
-    test_cirq_indexes = {}
+    test_cirq_indexes = []
     for i in range(num_qubits):
         get_proj = lambda e: np.dot(pca.components_[i], e) / np.linalg.norm(e)
         projs = [abs(get_proj(error)) for error in errors]
-        for ind in np.argsort(projs)[-1 - pc_cirq:-1]:
-            test_cirq_indexes[ind] = True
+
+        start_len = len(test_cirq_indexes)
+        pc_sorted = np.argsort(projs)
+        i = -1
+        while len(test_cirq_indexes) - start_len < pc_cirq:
+            ind = pc_sorted[i]
+            if ind not in test_cirq_indexes:
+                test_cirq_indexes.append(ind)
+            i -= 1
     
     if plot != 0:
         plot_errors(num_qubits, pca, pc_cirq, errors, test_cirq_indexes, plot)
     
-    return [training[ind] for ind in test_cirq_indexes.keys()]
+    return [training[ind] for ind in test_cirq_indexes]
 
+# plot_errors takes the number of qubits, the PCA object from
+# generate_calibration_circuits, the number of circuits selected per primary
+# component, the list of errors from each circuit, the selected calibration
+# circuits and the number of dimensions to plot in. The function proceeds to
+# project the errors into the principle component space, using the same number
+# of principle components as requested dimensions. Circuits are plotted in blue,
+# binary circuits are plotted in red, and calibration circuits corresponding to
+# the plotted principle components are in yellow.
 def plot_errors(num_qubits, pca, pc_cirq, errors, test_circuit_indexes, dim):
+    num_bin = 2 ** num_qubits
     if dim == 2:
         x = [np.dot(pca.components_[0], err) for err in errors]
         y = [np.dot(pca.components_[1], err) for err in errors]
 
-        plt.scatter(x[2 ** num_qubits:], y[2 ** num_qubits:], s=5)
-        plt.scatter(x[:2 ** num_qubits], y[:2 ** num_qubits], s=5, color='r')
-        for ind in test_circuit_indexes.keys()[:pc_cirq]:
+        plt.scatter(x[num_bin:], y[num_bin:], s=5)
+        plt.scatter(x[:num_bin], y[:num_bin], s=5, color='r')
+        for ind in test_circuit_indexes[:2 * pc_cirq]:
             plt.scatter(x[ind], y[ind], s=5, color='y')
         plt.show()
     elif dim == 3:
@@ -75,8 +96,10 @@ def plot_errors(num_qubits, pca, pc_cirq, errors, test_circuit_indexes, dim):
 
         fig = plt.figure()
         ax = fig.add_subplot(111, projection='3d')
-        ax.scatter(x[:2 ** num_qubits], y[:2 ** num_qubits], z[:2 ** num_qubits], color='r')
-        ax.scatter(x[2 ** num_qubits:], y[2 ** num_qubits:], z[2 ** num_qubits:])
+        ax.scatter(x[num_bin:], y[num_bin:], z[num_bin:])
+        ax.scatter(x[:num_bin], y[:num_bin], z[:num_bin], color='r')
+        for ind in test_circuit_indexes[:3 * pc_cirq]:
+            ax.scatter(x[ind], y[ind], z[ind], color='y')
         plt.show()
     else:
         raise Exception("Invalid number of dimensions")
@@ -164,7 +187,7 @@ def main():
     training = circuits[:math.ceil(.8 * len(circuits))]
     holdout = circuits[math.ceil(.8 * len(circuits)):]
 
-    calibration_circuits = generate_calibration_circuits(noisy, simulator, 3)
+    calibration_circuits = generate_calibration_circuits(noisy, simulator, 3, 5, 3)
     # build_model(training, holdout, calibration_circuits, noisy, simulator, num_qubits, shots)
 
 main()
